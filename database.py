@@ -35,3 +35,11 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS status_channel (
+                guild_id   INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL
+            )
+            """
+        )

@@ -47,6 +47,8 @@ class NamelessBot(commands.Bot):
             "cogs.welcome",
             "cogs.ai",
             "cogs.study",
+            "cogs.status",
+            "cogs.studytools",
         ]
 
         for extension in extensions:
