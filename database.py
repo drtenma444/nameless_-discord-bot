@@ -94,3 +94,15 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                channel_id INTEGER,
+                message    TEXT NOT NULL,
+                due_ts     INTEGER NOT NULL,
+                via_dm     INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )

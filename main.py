@@ -1,17 +1,20 @@
 
 import logging
 import os
+import asyncio
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
 from database import init_db
+from lock import InstanceLock
 
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 TEST_GUILD_ID = os.getenv("TEST_GUILD_ID")
+LOCK_CHANNEL_ID = os.getenv("LOCK_CHANNEL_ID")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +30,7 @@ log = logging.getLogger("nameless")
 
 class NamelessBot(commands.Bot):
     def __init__(self):
+        self.instance_lock = instance_lock
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
@@ -38,6 +42,8 @@ class NamelessBot(commands.Bot):
         )
 
     async def setup_hook(self):
+        if self.instance_lock.enabled:
+            self.lock_task = asyncio.create_task(self.instance_lock.heartbeat(self))
         init_db()
         
         extensions = [
@@ -50,6 +56,7 @@ class NamelessBot(commands.Bot):
             "cogs.status",
             "cogs.studytools",
             "cogs.activity",
+            "cogs.reminders",
         ]
 
         for extension in extensions:
@@ -76,13 +83,23 @@ def main():
             "DISCORD_TOKEN is missing. Check your .env file."
         )
 
-    bot = NamelessBot()
+    lock = InstanceLock(TOKEN, LOCK_CHANNEL_ID)
+    if lock.enabled:
+        try:
+            asyncio.run(lock.acquire())   # waits here in standby if the other machine is running
+        except KeyboardInterrupt:
+            return
+
+    bot = NamelessBot(lock)
 
     try:
         bot.run(TOKEN)
     except discord.LoginFailure:
         log.error("Invalid Discord token.")
         raise
+    finally:
+        if lock.enabled:
+            asyncio.run(lock.release())
 
 
 if __name__ == "__main__":

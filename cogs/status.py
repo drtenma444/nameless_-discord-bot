@@ -2,6 +2,7 @@ import logging
 import platform
 import subprocess
 import time
+import os
 from contextlib import closing
 from pathlib import Path
 
@@ -66,7 +67,7 @@ class Status(commands.Cog):
                 continue
             try:
                 await channel.send(
-                    f"🟢 back online · version `{short}` · {subject}"[:1900],
+                    f"🟢 back online on **{os.getenv('HOST_NAME', 'unknown')}** · version `{short}` · {subject}"[:1900],
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.HTTPException:
@@ -77,6 +78,7 @@ class Status(commands.Cog):
         short, subject = get_version()
         await interaction.response.send_message(
             f"**version:** `{short}` {subject}\n"
+            f"**running on:** {os.getenv('HOST_NAME', 'unknown')}\n"
             f"**uptime:** {fmt_uptime(time.time() - self.started)}\n"
             f"**ping:** {round(self.bot.latency * 1000)} ms\n"
             f"**python:** {platform.python_version()}",
