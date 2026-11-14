@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import connect
+from checks import owner_only
 
 log = logging.getLogger("nameless")
 
@@ -87,7 +88,7 @@ class Welcome(commands.Cog):
 
     @welcome.command(name="setup", description="Choose the channel for welcome messages.")
     @app_commands.describe(channel="Where new members get welcomed")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def setup_channel(
         self, interaction: discord.Interaction, channel: discord.TextChannel
     ):
@@ -117,14 +118,14 @@ class Welcome(commands.Cog):
         )
 
     @welcome.command(name="message", description="Customize the welcome message.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def set_message(self, interaction: discord.Interaction):
         row = get_settings(interaction.guild_id)
         current = row["message"] if row and row["message"] else DEFAULT_MESSAGE
         await interaction.response.send_modal(MessageModal(current))
 
     @welcome.command(name="preview", description="See what a welcome message looks like.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def preview(self, interaction: discord.Interaction):
         row = get_settings(interaction.guild_id)
         template = row["message"] if row and row["message"] else DEFAULT_MESSAGE
@@ -138,7 +139,7 @@ class Welcome(commands.Cog):
         )
 
     @welcome.command(name="disable", description="Turn welcome messages off.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def disable(self, interaction: discord.Interaction):
         with closing(connect()) as conn, conn:
             conn.execute(
@@ -183,8 +184,8 @@ class Welcome(commands.Cog):
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "You need the **Manage Server** permission for that."
+        if isinstance(error, app_commands.CheckFailure):
+            msg = "Only the bot owner can use that command."
         else:
             log.exception("Welcome command error", exc_info=error)
             msg = "Something went wrong on my end. Try again in a moment."

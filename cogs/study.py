@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from cogs.ai import client
 from database import connect
+from checks import owner_only
 
 log = logging.getLogger("nameless")
 
@@ -104,7 +105,7 @@ class StudyGuard(commands.Cog):
             app_commands.Choice(name="delete (remove it + short notice)", value="delete"),
         ]
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def setup_guard(
         self,
         interaction: discord.Interaction,
@@ -145,7 +146,7 @@ class StudyGuard(commands.Cog):
         )
 
     @studyguard.command(name="off", description="Turn the study guard off.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def turn_off(self, interaction: discord.Interaction):
         with closing(connect()) as conn, conn:
             conn.execute(
@@ -157,7 +158,7 @@ class StudyGuard(commands.Cog):
 
     @studyguard.command(name="test", description="See how the AI would judge a message.")
     @app_commands.describe(text="A message to test")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @owner_only()
     async def test(self, interaction: discord.Interaction, text: str):
         await interaction.response.defer(ephemeral=True)
         result = await self.classify(text)
@@ -227,8 +228,8 @@ class StudyGuard(commands.Cog):
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "You need the **Manage Server** permission for that."
+        if isinstance(error, app_commands.CheckFailure):
+            msg = "Only the bot owner can use that command."
         else:
             log.exception("Study guard command error", exc_info=error)
             msg = "Something went wrong on my end. Try again in a moment."
