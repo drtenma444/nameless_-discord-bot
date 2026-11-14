@@ -29,7 +29,7 @@ log = logging.getLogger("nameless")
 
 
 class NamelessBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, instance_lock):
         self.instance_lock = instance_lock
         intents = discord.Intents.default()
         intents.members = True
