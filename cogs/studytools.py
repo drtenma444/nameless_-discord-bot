@@ -67,63 +67,129 @@ def cooldown():
 
 
 class QuizView(discord.ui.View):
-    def __init__(self, quiz: dict):
-        super().__init__(timeout=180)
+    def __init__(self, quiz: dict, minutes: int, owner_id: int):
+        super().__init__(timeout=minutes * 60)
         self.quiz = quiz
-        self.answered = False
+        self.owner_id = owner_id
+        self.answers = {}      # user id -> (choice index, display name)
         self.message = None
+        self.finished = False
+
         for i in range(4):
             button = discord.ui.Button(label="ABCD"[i], style=discord.ButtonStyle.secondary)
             button.callback = self._make_callback(i)
             self.add_item(button)
 
-    def body(self) -> str:
+        end = discord.ui.Button(label="End quiz", style=discord.ButtonStyle.danger, row=1)
+        end.callback = self._end_callback
+        self.add_item(end)
+
+    def question_text(self) -> str:
         lines = [f"**{self.quiz['question']}**", ""]
         for i, option in enumerate(self.quiz["options"]):
             lines.append(f"**{'ABCD'[i]})** {option}")
         return "\n".join(lines)
 
+    def open_text(self) -> str:
+        n = len(self.answers)
+        if n:
+            status = f"{n} answered so far. Tap a letter to join in."
+        else:
+            status = "No answers yet. Tap a letter to answer (one try each)."
+        return f"{self.question_text()}\n\n{status}"[:1900]
+
+    def standings(self) -> str:
+        correct = self.quiz["answer"]
+        right = [name for idx, name in self.answers.values() if idx == correct]
+        wrong = [
+            f"{name} ({'ABCD'[idx]})"
+            for idx, name in self.answers.values()
+            if idx != correct
+        ]
+        return (
+            "✅ Got it right: " + (", ".join(right) or "nobody") + "\n"
+            "❌ Missed it: " + (", ".join(wrong) or "nobody")
+        )
+
     def _make_callback(self, index: int):
         async def callback(interaction: discord.Interaction):
-            if self.answered:
+            if self.finished:
                 await interaction.response.send_message(
-                    "someone already answered this one", ephemeral=True
+                    "This quiz has ended.", ephemeral=True
                 )
                 return
-            self.answered = True
+
+            uid = interaction.user.id
+            if uid in self.answers:
+                await interaction.response.send_message(
+                    "You already answered this one.", ephemeral=True
+                )
+                return
+
+            name = discord.utils.escape_markdown(interaction.user.display_name)
+            self.answers[uid] = (index, name)
 
             correct = self.quiz["answer"]
-            for i, item in enumerate(self.children):
-                item.disabled = True
-                if i == correct:
-                    item.style = discord.ButtonStyle.success
-                elif i == index:
-                    item.style = discord.ButtonStyle.danger
-
             if index == correct:
-                verdict = f"✅ {interaction.user.display_name} got it!"
+                verdict = f"✅ Correct! The answer is **{'ABCD'[correct]}**."
             else:
                 verdict = (
-                    f"❌ {interaction.user.display_name} picked {'ABCD'[index]}. "
-                    f"correct answer: **{'ABCD'[correct]}**"
+                    f"❌ Not quite. You picked {'ABCD'[index]}. "
+                    f"The correct answer is **{'ABCD'[correct]}**."
                 )
-            text = f"{self.body()}\n\n{verdict}\n{self.quiz['explanation']}"
-            await interaction.response.edit_message(
-                content=text[:1900], view=self, allowed_mentions=NO_PINGS
+            await interaction.response.send_message(
+                f"{verdict}\n{self.quiz['explanation']}\n\n**So far:**\n{self.standings()}"[:1900],
+                ephemeral=True,
             )
+
+            # update the public counter
+            if self.message is not None:
+                try:
+                    await self.message.edit(
+                        content=self.open_text(), allowed_mentions=NO_PINGS
+                    )
+                except discord.HTTPException:
+                    pass
 
         return callback
 
-    async def on_timeout(self):
-        if self.answered or self.message is None:
+    async def _end_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the person who started the quiz can end it.", ephemeral=True
+            )
             return
-        for item in self.children:
-            item.disabled = True
-        try:
-            await self.message.edit(view=self)
-        except discord.HTTPException:
-            pass
+        await interaction.response.defer()
+        await self.finish()
+        self.stop()
 
+    async def finish(self):
+        if self.finished:
+            return
+        self.finished = True
+
+        correct = self.quiz["answer"]
+        for i, item in enumerate(self.children):
+            item.disabled = True
+            if i == correct:
+                item.style = discord.ButtonStyle.success
+
+        results = self.standings() if self.answers else "Nobody answered this one."
+        text = (
+            f"{self.question_text()}\n\n"
+            f"**Quiz ended.** The correct answer is **{'ABCD'[correct]}**.\n"
+            f"{self.quiz['explanation']}\n\n{results}"
+        )
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    content=text[:1900], view=self, allowed_mentions=NO_PINGS
+                )
+            except discord.HTTPException:
+                pass
+
+    async def on_timeout(self):
+        await self.finish()
 
 class StudyTools(commands.Cog):
     def __init__(self, bot):
@@ -173,10 +239,18 @@ class StudyTools(commands.Cog):
             return
         await interaction.followup.send(result[:1900], allowed_mentions=NO_PINGS)
 
-    @app_commands.command(name="quiz", description="Get a multiple-choice question on a topic.")
-    @app_commands.describe(topic="What should the question be about?")
+    @app_commands.command(name="quiz", description="Post a multiple-choice question anyone can answer.")
+    @app_commands.describe(
+        topic="What should the question be about?",
+        minutes="How long it stays open (1 to 10 minutes, default 2)",
+    )
     @cooldown()
-    async def quiz(self, interaction: discord.Interaction, topic: str):
+    async def quiz(
+        self,
+        interaction: discord.Interaction,
+        topic: str,
+        minutes: app_commands.Range[int, 1, 10] = 2,
+    ):
         await interaction.response.defer()
         try:
             raw = await ask(
@@ -186,13 +260,13 @@ class StudyTools(commands.Cog):
         except Exception:
             log.exception("/quiz failed")
             await interaction.followup.send(
-                "couldn't make a quiz, try again or try a different topic", ephemeral=True
+                "Couldn't make a quiz. Try again or try a different topic.", ephemeral=True
             )
             return
 
-        view = QuizView(quiz)
+        view = QuizView(quiz, minutes, interaction.user.id)
         view.message = await interaction.followup.send(
-            view.body(), view=view, allowed_mentions=NO_PINGS, wait=True
+            view.open_text(), view=view, allowed_mentions=NO_PINGS, wait=True
         )
 
     async def cog_app_command_error(
