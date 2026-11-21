@@ -52,10 +52,13 @@ ROUTER_PROMPT = """You help a Discord chatbot decide what extra info it needs to
 Reply with ONLY this JSON and nothing else:
 {"web": true or false, "query": "short web search query, or empty", "activity": true or false}
 
-web = true ONLY if the answer depends on up-to-date or real-world facts that may have changed \
-(news, sports scores, prices, weather, product releases, current events, "latest", "today", \
-"right now") or facts you clearly cannot know. Casual chat, jokes, opinions, math, coding, \
-and normal study explanations are false. The query should be in English.
+web = true ONLY when the person is ASKING for information that depends on up-to-date or \
+real-world facts that may have changed (news, sports scores, prices, weather, product releases, \
+current events, "latest", "today", "right now") or facts you clearly cannot know.
+web = false for opinions, statements, complaints, jokes, roasts, casual chat, math, coding \
+and normal study explanations, even when they mention a current topic. \
+web = false for questions about the conversation itself ("what did you say", "repeat that", \
+"explain that again"). The query should be in English.
 activity = true ONLY if the person asks who is active/talking in this server, \
 who chats the most, or similar server activity stats.
 
@@ -67,6 +70,10 @@ ACTIVITY_WORDS = re.compile(
     r"|who'?s (here|around|talking|chatting)|who is (here|around|talking|chatting))\b"
     r"|অ্যাক্টিভ|এক্টিভ|একটিভ|অনলাইন|সক্রিয়",
     re.I,
+)
+
+CHAT_ABOUT_CHAT = re.compile(
+    r"\b(what did you (just )?say|say that again|repeat that|what do you mean)\b", re.I
 )
 
 def with_sources(answer: str, sources: list) -> str:
@@ -121,6 +128,8 @@ class AI(commands.Cog):
         """Quick AI check: does this message need a web search or server activity info?"""
         if ACTIVITY_WORDS.search(text):
             return {"web": False, "query": "", "activity": True}
+        if CHAT_ABOUT_CHAT.search(text):
+                    return {}
         if len(text.split()) < 4:
             return {}
         try:
@@ -158,9 +167,8 @@ class AI(commands.Cog):
             ok, info = websearch.reserve(user.id, is_owner)
             if not ok:
                 notes.append(
-                    f"NOTE: this question needs a live web search, but {info}. "
-                    "Tell them casually you can't look it up right now, and answer only from "
-                    "what you already know, saying it might be out of date."
+                    "If, and only if, your reply uses information from the web results above, "
+                    "end it with the exact text [USED_WEB]. Otherwise do not write that."
                 )
             else:
                 results = await websearch.search(decision.get("query") or text)
@@ -210,6 +218,10 @@ class AI(commands.Cog):
             temperature=0.65,
         )
         answer = (response.choices[0].message.content or "").strip()
+        if "[USED_WEB]" in answer:
+            answer = answer.replace("[USED_WEB]", "").strip()
+        else:
+            sources = []   # only show sources when the answer really used them
         return answer, sources
 
     @app_commands.command(name="chat", description="Talk to nameless_")
@@ -323,6 +335,7 @@ class AI(commands.Cog):
         try:
             async with message.channel.typing():
                 past = await self.recent_chat(message)
+                log.info("AI context: %s earlier messages", len(past))
                 answer, sources = await self.respond(
                     message.guild, message.author, user_line, text, past
                 )
