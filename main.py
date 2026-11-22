@@ -77,6 +77,12 @@ class NamelessBot(commands.Bot):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         log.info("Connected to %s server(s).", len(self.guilds))
 
+    async def on_command_error(self, ctx, error):
+        # The bot only uses slash commands, so "@nameless_ how ..." isn't a real command.
+        if isinstance(error, commands.CommandNotFound):
+            return
+        log.error("Command error: %s", error)
+
 
 def main():
     if not TOKEN:
@@ -94,7 +100,7 @@ def main():
     bot = NamelessBot(lock)
 
     try:
-        bot.run(TOKEN)
+        bot.run(TOKEN, log_handler=None)
     except discord.LoginFailure:
         log.error("Invalid Discord token.")
         raise
