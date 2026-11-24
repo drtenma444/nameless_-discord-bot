@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import random
 import time
@@ -6,6 +7,8 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+import cardart
 
 log = logging.getLogger("nameless")
 
@@ -15,7 +18,7 @@ MAX_PLAYERS = 6
 START_CARDS = 7
 TURN_SECONDS = 120       # time allowed per turn
 LOBBY_SECONDS = 300      # how long the lobby stays open
-CARDS_PER_PAGE = 20      # card buttons per page in your hand
+PER_PAGE = 10            # cards shown per page in your hand
 
 # Roles (by name) that can start, cancel and configure any lobby, besides the host
 MANAGER_ROLES = {"admin", "subadmin", "vip"}
@@ -43,21 +46,12 @@ VALUE_ORDER = {
 }
 
 HOW_TO = (
-    "**How to play UNO**\n"
-    "• **Goal:** be the first to get rid of all your cards.\n"
-    "• **Your turn:** the bot pings you. Press **🃏 My hand** and click a card. "
-    "Coloured cards can be played. Greyed-out cards can't be played right now.\n"
-    "• A card works if it matches the **colour**, the **number** or the **symbol** of the top card. "
-    "Wild cards always work, and you pick the new colour.\n"
-    "• **Can't play?** Press **Draw**. If the card you drew can be played, you may play it or press **Pass**.\n"
-    "• **Skip:** the next player loses their turn. **Reverse:** the direction flips. "
-    "**+2:** the next player draws 2 and loses their turn. "
-    "**Wild +4:** the next player draws 4 and loses their turn. "
-    "You can only play a Wild +4 when you have no card of the current colour.\n"
-    "• **One card left?** Press **UNO!** in your hand. If you forget and someone presses "
-    "**Catch UNO!** before the next player moves, you draw 2.\n"
-    "• Away for 2 minutes? You draw a card automatically. Two misses in a row and you're removed.\n"
-    "• The winner scores points from the cards left in the other hands."
+    "**UNO in 20 seconds**\n"
+    "• Press **🃏 My hand** and tap a card's number. Cards with a green outline can be played.\n"
+    "• Match the top card's **colour**, or its **number / symbol**. Wild cards always work.\n"
+    "• Can't play? Press **Draw**.\n"
+    "• One card left? Press **UNO!** before the next player moves, or someone can catch you.\n"
+    "• First to get rid of all their cards wins."
 )
 
 
@@ -69,8 +63,7 @@ def clean(user) -> str:
 
 
 def short(card: str) -> str:
-    value = card[2:]
-    return SHORT.get(value, value)
+    return SHORT.get(card[2:], card[2:])
 
 
 def emoji_of(card: str) -> str:
@@ -164,7 +157,7 @@ class UnoGame:
 
     def note(self, text: str):
         self.history.append(text)
-        self.history = self.history[-4:]
+        self.history = self.history[-3:]
 
     def _next_index(self, steps: int = 1) -> int:
         return (self.turn + self.direction * steps) % len(self.players)
@@ -226,9 +219,9 @@ class UnoGame:
         self.direction = 1
         first = self.players[0]
 
-        text = f"Game on! The first card is {label(top)}."
+        text = f"Game on! First card: {label(top)}."
         if color == "W":
-            text += f" The colour was picked at random: {COLORS[self.color]} {COLOR_NAMES[self.color]}."
+            text += f" Random colour: {COLORS[self.color]}."
         elif value == "skip":
             self.turn = 1 % n
             text += f" {clean(first)} is skipped."
@@ -238,7 +231,7 @@ class UnoGame:
                 text += f" {clean(first)} is skipped."
             else:
                 self.direction = -1
-                text += " The direction is reversed."
+                text += " Direction reversed."
         elif value == "draw2":
             self.hands[first.id].extend(self.draw_cards(2))
             self.turn = 1 % n
@@ -277,7 +270,7 @@ class UnoGame:
 
             if code[0] == "W":
                 self.color = chosen
-                played = f"{label(code)} and chose {COLORS[chosen]} {COLOR_NAMES[chosen]}"
+                played = f"{label(code)} → {COLORS[chosen]}"
             else:
                 self.color = code[0]
                 played = label(code)
@@ -293,35 +286,32 @@ class UnoGame:
             if value == "reverse":
                 if n == 2:
                     self._advance(2)
-                    text += " With two players Reverse works like Skip, so they play again."
+                    text += " Plays again."
                 else:
                     self.direction *= -1
                     self._advance(1)
-                    text += " The direction is reversed."
+                    text += " Direction reversed."
             elif value == "skip":
                 self._advance(2)
-                text += f" **{clean(victim)}** is skipped."
+                text += f" {clean(victim)} is skipped."
             elif value in ("draw2", "wild4"):
                 count = 2 if value == "draw2" else 4
                 if self.rules["stack"]:
                     self.pending += count
                     self.pending_kind = value
                     self._advance(1)
-                    text += (
-                        f" **{clean(victim)}** must stack a {short(code)} "
-                        f"or draw {self.pending}."
-                    )
+                    text += f" {clean(victim)} must stack or draw {self.pending}."
                 else:
                     self.hands[victim.id].extend(self.draw_cards(count))
                     self._advance(2)
-                    text += f" **{clean(victim)}** draws {count} and is skipped."
+                    text += f" {clean(victim)} draws {count}."
             else:
                 self._advance(1)
 
             if len(hand) == 1:
                 if self.rules["catch"]:
                     self.uno_target = player.id
-                    text += f" ⚠️ **{name}** has ONE card left!"
+                    text += f" ⚠️ {name} has ONE card left!"
                 else:
                     text += f" **UNO!** {name} has one card left."
 
@@ -369,11 +359,11 @@ class UnoGame:
             if self.is_playable(card, hand):
                 self.drawn = card
                 self.note(f"**{name}** drew a card.")
-                return True, f"You drew {label(card)}. You can play it or press Pass.", False
+                return True, f"You drew {label(card)}. Play it or press Pass.", False
 
             self._advance(1)
             self.note(f"**{name}** drew a card and couldn't play it.")
-            return True, f"You drew {label(card)}, but it can't be played. Your turn is over.", True
+            return True, f"You drew {label(card)}, but it can't be played. Turn over.", True
 
     async def pass_turn(self, player):
         """Returns (ok, text, turn_moved)."""
@@ -417,9 +407,7 @@ class UnoGame:
             if target is None:
                 return False, "Too late, there's nobody to catch right now."
             self.hands[target.id].extend(self.draw_cards(2))
-            self.note(
-                f"🚨 **{clean(user)}** caught **{clean(target)}** without UNO! They draw 2."
-            )
+            self.note(f"🚨 **{clean(user)}** caught **{clean(target)}** without UNO! Draws 2.")
             return True, f"Got them! {clean(target)} draws 2 cards."
 
     async def leave(self, user):
@@ -433,9 +421,7 @@ class UnoGame:
             was_current = self.current.id == player.id
             self._remove(player)
             if len(self.players) == 1:
-                self._finish(
-                    f"🏆 **{clean(self.players[0])}** wins because everyone else left!"
-                )
+                self._finish(f"🏆 **{clean(self.players[0])}** wins, everyone else left!")
                 return True, "You left the game.", True
             self.note(f"**{clean(player)}** left the game.")
             if was_current:
@@ -471,9 +457,7 @@ class UnoGame:
         if self.strikes[player.id] >= 2:
             self._remove(player)
             if len(self.players) == 1:
-                self._finish(
-                    f"🏆 **{clean(self.players[0])}** wins because everyone else left!"
-                )
+                self._finish(f"🏆 **{clean(self.players[0])}** wins, everyone else left!")
                 return
             self.note(f"**{name}** was removed for being away.")
         else:
@@ -484,9 +468,7 @@ class UnoGame:
                 self.pending = 0
                 self.pending_kind = None
                 self.hands[player.id].extend(self.draw_cards(count))
-                self.note(
-                    f"**{name}** ran out of time and drew {count} card{'s' if count != 1 else ''}."
-                )
+                self.note(f"**{name}** ran out of time and drew {count}.")
             self._advance(1)
         self.turn_started = time.monotonic()
 
@@ -498,8 +480,7 @@ class UnoGame:
             for c in hand
         )
         self._finish(
-            f"🏆 **{clean(winner)}** played their last card and wins the round! "
-            f"They score **{total}** points from the other hands."
+            f"🏆 **{clean(winner)}** wins the round and scores **{total}** points!"
         )
 
     def _finish(self, text: str):
@@ -537,89 +518,45 @@ class UnoGame:
 
     def lobby_embed(self) -> discord.Embed:
         names = "\n".join(
-            f"{'👑' if p.id == self.host.id else '•'} {clean(p)}" for p in self.players
+            f"{'👑' if p.id == self.host.id else '▫️'} {clean(p)}" for p in self.players
         )
-        embed = discord.Embed(
-            title="UNO lobby",
-            description="Press **Join** to play. The host presses **Start** when everyone is in.",
-            color=0x5865F2,
+        embed = discord.Embed(title="UNO", description=names, color=0xED4245)
+        embed.set_image(url="attachment://uno.png")
+        embed.set_footer(
+            text=f"{len(self.players)}/{MAX_PLAYERS} players · the host presses Start"
         )
-        embed.add_field(
-            name=f"Players ({len(self.players)}/{MAX_PLAYERS})", value=names, inline=False
-        )
-        embed.add_field(
-            name="Rules",
-            value=(
-                "Official UNO rules, plus two options the host can switch:\n"
-                f"• Stacking +2/+4: **{'On' if self.rules['stack'] else 'Off'}**\n"
-                f"• UNO call and catch: **{'On' if self.rules['catch'] else 'Off'}**"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="How it works",
-            value=(
-                "1. When it's your turn, the bot pings you.\n"
-                "2. Press **🃏 My hand** and click a coloured card to play it.\n"
-                "3. Nothing to play? Press **Draw**."
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="2 to 6 players. The lobby closes after 5 minutes.")
         return embed
 
+    def table_bytes(self) -> bytes:
+        counts = [len(self.hands.get(p.id, [])) for p in self.players]
+        return cardart.render_table(
+            self.top, self.color, self.direction, len(self.deck), counts,
+            -1 if self.ended else self.turn, self.pending,
+        )
+
     def board_embed(self) -> discord.Embed:
+        names = "   ".join(f"**{i + 1}** {clean(p)}" for i, p in enumerate(self.players))
         if self.ended:
             embed = discord.Embed(
-                title="UNO: game over", description=self.result, color=0xF1C40F
+                title="Game over", description=f"{self.result}\n\n{names}", color=0xF1C40F
             )
-            lines = [
-                f"{clean(p)}: {len(self.hands.get(p.id, []))} card(s) left"
-                for p in self.players
-            ]
-            embed.add_field(name="Cards left", value="\n".join(lines)[:1000], inline=False)
-            return embed
-
-        arrow = "➡️ clockwise" if self.direction == 1 else "⬅️ counter-clockwise"
-        desc = (
-            f"👉 **{clean(self.current)}**'s turn\n"
-            f"Colour: {COLORS[self.color]} **{COLOR_NAMES[self.color]}**  ·  {arrow}"
-        )
-        if self.pending:
-            kind = SHORT[self.pending_kind]
-            desc += (
-                f"\n💥 **{self.pending} cards** are waiting. "
-                f"Stack a {kind} or draw them."
+        else:
+            moves = "\n".join(self.history[-2:])
+            embed = discord.Embed(
+                title=f"{clean(self.current)}'s turn",
+                description=f"{moves}\n\n{names}",
+                color=EMBED_COLORS[self.color],
             )
-        embed = discord.Embed(
-            title=f"Top card: {label(self.top)}",
-            description=desc,
-            color=EMBED_COLORS[self.color],
-        )
-        embed.set_author(name="UNO")
-
-        lines = []
-        for i, p in enumerate(self.players):
-            count = len(self.hands.get(p.id, []))
-            mark = "👉" if i == self.turn else "▫️"
-            warn = "  ⚠️ UNO!" if count == 1 else ""
-            lines.append(f"{mark} {clean(p)}: {count} card{'s' if count != 1 else ''}{warn}")
-        embed.add_field(name="Players", value="\n".join(lines)[:1000], inline=False)
-
-        if self.history:
-            embed.add_field(
-                name="Recent moves", value="\n".join(self.history)[:1000], inline=False
-            )
-        embed.set_footer(
-            text="Your turn? Press 🃏 My hand, then click a card. New here? Press ❓ How to play."
-        )
+        embed.set_image(url="attachment://table.png")
         return embed
 
     async def post_board(self):
-        """Posts a fresh board (pinging whoever's turn it is) and removes the old one."""
+        """Posts a fresh table (pinging whoever's turn it is) and removes the old one."""
         async with self.board_lock:
             old, old_view = self.board_message, self.board_view
 
+            data = await asyncio.to_thread(self.table_bytes)
+            file = discord.File(io.BytesIO(data), filename="table.png")
             if self.ended:
                 view = EndView(self)
                 content = None
@@ -627,18 +564,19 @@ class UnoGame:
             else:
                 view = GameView(self)
                 cur = self.current
-                content = f"{cur.mention}, it's your turn!"
+                content = f"{cur.mention}, your turn!"
                 mentions = discord.AllowedMentions(users=[cur])
 
             try:
                 msg = await self.channel.send(
                     content=content,
                     embed=self.board_embed(),
+                    file=file,
                     view=view,
                     allowed_mentions=mentions,
                 )
             except discord.HTTPException:
-                log.exception("Couldn't post the UNO board")
+                log.exception("Couldn't post the UNO table")
                 return
 
             self.board_message, self.board_view = msg, view
@@ -651,40 +589,55 @@ class UnoGame:
                     pass
 
     async def edit_board(self):
-        """Updates the current board without pinging anyone."""
+        """Updates the current table without pinging anyone."""
         async with self.board_lock:
             if self.board_message is None or self.ended:
                 return
             old_view = self.board_view
+            data = await asyncio.to_thread(self.table_bytes)
+            file = discord.File(io.BytesIO(data), filename="table.png")
             view = GameView(self)
             try:
-                await self.board_message.edit(embed=self.board_embed(), view=view)
+                await self.board_message.edit(
+                    embed=self.board_embed(), attachments=[file], view=view
+                )
             except discord.HTTPException:
-                log.warning("Couldn't update the UNO board")
+                log.warning("Couldn't update the UNO table")
                 return
             self.board_view = view
             if old_view is not None:
                 old_view.stop()
 
 
-# ---------------- your private hand ----------------
+# ---------------- your private hand (a picture + number buttons) ----------------
+
+async def show_hand(interaction, game, player, note="", page=0, first=False):
+    """Draws your hand as a picture. The interaction must already be deferred."""
+    view = HandView(game, player, page)
+    data = await asyncio.to_thread(cardart.render_hand, view.shown, view.flags, view.start)
+    file = discord.File(io.BytesIO(data), filename="hand.png")
+    text = view.text(note)
+    if first:
+        await interaction.followup.send(content=text, file=file, view=view, ephemeral=True)
+    else:
+        await interaction.edit_original_response(content=text, attachments=[file], view=view)
+
 
 async def play_and_update(interaction, game, player, code, chosen):
+    await interaction.response.defer()
     err = await game.play(player, code, chosen)
-    view = HandView(game, player)
-    note = err or f"You played {label(code)}."
-    await interaction.response.edit_message(content=view.text(note), view=view)
+    await show_hand(interaction, game, player, note=err or f"You played {label(code)}.")
     if err is None:
         await game.post_board()
 
 
 async def draw_or_pass(interaction, game, player, action):
+    await interaction.response.defer()
     if action == "draw":
         ok, note, moved = await game.draw(player)
     else:
         ok, note, moved = await game.pass_turn(player)
-    view = HandView(game, player)
-    await interaction.response.edit_message(content=view.text(note), view=view)
+    await show_hand(interaction, game, player, note=note)
     if ok:
         if moved:
             await game.post_board()
@@ -715,8 +668,8 @@ class ColorView(discord.ui.View):
         return callback
 
     async def _back(self, interaction: discord.Interaction):
-        view = HandView(self.game, self.player)
-        await interaction.response.edit_message(content=view.text(), view=view)
+        await interaction.response.defer()
+        await show_hand(interaction, self.game, self.player)
 
 
 class HandView(discord.ui.View):
@@ -729,112 +682,90 @@ class HandView(discord.ui.View):
         self.my_turn = (
             game.started and not game.ended and game.current.id == player.id
         )
+        ordered = sort_hand(hand)
 
-        groups = {}
-        for card in sort_hand(hand):
-            groups[card] = groups.get(card, 0) + 1
-        cards = list(groups.items())
-
-        self.pages = max(1, -(-len(cards) // CARDS_PER_PAGE))
+        self.pages = max(1, -(-len(ordered) // PER_PAGE))
         self.page = max(0, min(page, self.pages - 1))
-        chunk = cards[self.page * CARDS_PER_PAGE:(self.page + 1) * CARDS_PER_PAGE]
+        self.start = self.page * PER_PAGE
+        self.shown = ordered[self.start:self.start + PER_PAGE]
+        self.flags = [
+            self.my_turn
+            and game.is_playable(code, hand)
+            and (game.drawn is None or code == game.drawn)
+            for code in self.shown
+        ]
 
-        for i, (code, count) in enumerate(chunk):
-            playable = (
-                self.my_turn
-                and game.is_playable(code, hand)
-                and (game.drawn is None or code == game.drawn)
-            )
-            text = short(code) + (f" ×{count}" if count > 1 else "")
+        # one numbered button per card, laid out like the cards in the picture
+        for i, code in enumerate(self.shown):
             button = discord.ui.Button(
-                label=text,
+                label=str(self.start + i + 1),
                 emoji=emoji_of(code),
                 style=BUTTON_STYLES[code[0]],
-                disabled=not playable,
+                disabled=not self.flags[i],
                 row=i // 5,
             )
             button.callback = self._card_callback(code)
             self.add_item(button)
 
-        # bottom row: actions
+        # action row
         if self.my_turn:
-            draw_label = f"Draw {game.pending}" if game.pending else "Draw a card"
+            draw_label = f"Draw {game.pending}" if game.pending else "Draw"
             draw = discord.ui.Button(
-                label=draw_label,
-                style=discord.ButtonStyle.primary,
-                disabled=game.drawn is not None,
-                row=4,
+                label=draw_label, emoji="🃏", style=discord.ButtonStyle.primary,
+                disabled=game.drawn is not None, row=2,
             )
             draw.callback = self._on_draw
             self.add_item(draw)
             if game.drawn is not None:
                 skip = discord.ui.Button(
-                    label="Pass", style=discord.ButtonStyle.secondary, row=4
+                    label="Pass", emoji="⏭️", style=discord.ButtonStyle.secondary, row=2
                 )
                 skip.callback = self._on_pass
                 self.add_item(skip)
         else:
             refresh = discord.ui.Button(
-                label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=4
+                label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=2
             )
             refresh.callback = self._on_refresh
             self.add_item(refresh)
 
         if game.uno_target == player.id:
-            uno = discord.ui.Button(label="UNO!", style=discord.ButtonStyle.success, row=4)
+            uno = discord.ui.Button(label="UNO!", style=discord.ButtonStyle.success, row=2)
             uno.callback = self._on_uno
             self.add_item(uno)
 
         if self.pages > 1:
             prev_btn = discord.ui.Button(
                 label="◀", style=discord.ButtonStyle.secondary,
-                disabled=self.page == 0, row=4,
+                disabled=self.page == 0, row=3,
             )
             prev_btn.callback = self._on_prev
             self.add_item(prev_btn)
             next_btn = discord.ui.Button(
                 label="▶", style=discord.ButtonStyle.secondary,
-                disabled=self.page >= self.pages - 1, row=4,
+                disabled=self.page >= self.pages - 1, row=3,
             )
             next_btn.callback = self._on_next
             self.add_item(next_btn)
 
     def text(self, note: str = "") -> str:
         g = self.game
-        hand = g.hands.get(self.player.id, [])
-        lines = []
-        if note:
-            lines += [note, ""]
-        lines.append(
-            f"**Top card:** {label(g.top)}  ·  **Colour:** {COLORS[g.color]} {COLOR_NAMES[g.color]}"
-        )
-        lines.append(f"**Your hand:** {len(hand)} card{'s' if len(hand) != 1 else ''}")
         if g.ended:
-            lines.append("The game is over.")
+            line = "Game over."
         elif self.my_turn:
             if g.pending:
-                lines.append(
-                    f"👉 **Your turn!** {g.pending} cards are waiting. "
-                    f"Stack a matching card, or press Draw {g.pending}."
-                )
+                line = f"👉 Your turn: stack a matching card or draw {g.pending}"
             elif g.drawn is not None:
-                lines.append("👉 **Your turn!** Play the card you drew, or press Pass.")
+                line = "👉 Play the card you drew, or Pass"
             else:
-                lines.append(
-                    "👉 **Your turn!** Click a coloured card to play it. "
-                    "Greyed-out cards can't be played right now. Nothing to play? Press Draw."
-                )
+                line = "👉 Your turn: tap a card number"
         else:
-            lines.append(
-                f"⏳ Waiting for **{clean(g.current)}**. Press Refresh when it's your turn again."
-            )
+            line = f"⏳ {clean(g.current)}'s turn"
         if g.uno_target == self.player.id:
-            lines.append(
-                "⚠️ **You have one card left! Press UNO! before the next player moves.**"
-            )
+            line += "\n⚠️ One card left! Press UNO!"
         if self.pages > 1:
-            lines.append(f"Page {self.page + 1} of {self.pages}")
-        return "\n".join(lines)[:1900]
+            line += f"\nPage {self.page + 1}/{self.pages}"
+        return (f"{note}\n{line}" if note else line)[:1900]
 
     def _card_callback(self, code):
         async def callback(interaction: discord.Interaction):
@@ -848,10 +779,6 @@ class HandView(discord.ui.View):
 
         return callback
 
-    async def _show(self, interaction, page=None, note=""):
-        view = HandView(self.game, self.player, self.page if page is None else page)
-        await interaction.response.edit_message(content=view.text(note), view=view)
-
     async def _on_draw(self, interaction: discord.Interaction):
         await draw_or_pass(interaction, self.game, self.player, "draw")
 
@@ -859,22 +786,26 @@ class HandView(discord.ui.View):
         await draw_or_pass(interaction, self.game, self.player, "pass")
 
     async def _on_refresh(self, interaction: discord.Interaction):
-        await self._show(interaction)
+        await interaction.response.defer()
+        await show_hand(interaction, self.game, self.player, page=self.page)
 
     async def _on_prev(self, interaction: discord.Interaction):
-        await self._show(interaction, self.page - 1)
+        await interaction.response.defer()
+        await show_hand(interaction, self.game, self.player, page=self.page - 1)
 
     async def _on_next(self, interaction: discord.Interaction):
-        await self._show(interaction, self.page + 1)
+        await interaction.response.defer()
+        await show_hand(interaction, self.game, self.player, page=self.page + 1)
 
     async def _on_uno(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         ok, note = await self.game.call_uno(self.player)
-        await self._show(interaction, note=note)
+        await show_hand(interaction, self.game, self.player, note=note, page=self.page)
         if ok:
             await self.game.edit_board()
 
 
-# ---------------- the public board buttons ----------------
+# ---------------- the public table buttons ----------------
 
 class GameView(discord.ui.View):
     def __init__(self, game):
@@ -899,8 +830,8 @@ class GameView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        view = HandView(g, interaction.user)
-        await interaction.response.send_message(view.text(), view=view, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await show_hand(interaction, g, interaction.user, first=True)
 
     @discord.ui.button(label="How to play", emoji="❓", style=discord.ButtonStyle.secondary)
     async def how_to(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1034,7 +965,7 @@ class LobbyView(discord.ui.View):
         g.start()
         self.stop()
         await interaction.response.edit_message(
-            content="The game has started! 👇", embed=None, view=None
+            content="The game has started! 👇", embed=None, view=None, attachments=[]
         )
         g.watchdog_task = asyncio.create_task(g.watchdog())
         await g.post_board()
@@ -1052,7 +983,7 @@ class LobbyView(discord.ui.View):
             g.on_finish()
         self.stop()
         await interaction.response.edit_message(
-            content="UNO lobby cancelled.", embed=None, view=None
+            content="UNO lobby cancelled.", embed=None, view=None, attachments=[]
         )
 
     @discord.ui.button(label="Stacking", style=discord.ButtonStyle.secondary, row=1)
@@ -1088,7 +1019,9 @@ class LobbyView(discord.ui.View):
             g.on_finish()
         if self.message is not None:
             try:
-                await self.message.edit(content="UNO lobby expired.", embed=None, view=None)
+                await self.message.edit(
+                    content="UNO lobby expired.", embed=None, view=None, attachments=[]
+                )
             except discord.HTTPException:
                 pass
 
@@ -1128,17 +1061,21 @@ class Uno(commands.Cog):
             return
 
         perms = channel.permissions_for(interaction.guild.me)
-        if not (perms.send_messages and perms.embed_links):
+        if not (perms.send_messages and perms.embed_links and perms.attach_files):
             await interaction.response.send_message(
-                "I need **Send Messages** and **Embed Links** in this channel.",
+                "I need **Send Messages**, **Embed Links** and **Attach Files** in this channel.",
                 ephemeral=True,
             )
             return
 
+        await interaction.response.defer()
         game = self.new_game(channel, interaction.user)
         view = LobbyView(game)
-        await interaction.response.send_message(embed=game.lobby_embed(), view=view)
-        view.message = await interaction.original_response()
+        data = await asyncio.to_thread(cardart.render_banner)
+        file = discord.File(io.BytesIO(data), filename="uno.png")
+        view.message = await interaction.followup.send(
+            embed=game.lobby_embed(), file=file, view=view, wait=True
+        )
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError

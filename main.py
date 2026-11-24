@@ -61,8 +61,11 @@ class NamelessBot(commands.Bot):
         ]
 
         for extension in extensions:
-            await self.load_extension(extension)
-            log.info("Loaded extension: %s", extension)
+            try:
+                await self.load_extension(extension)
+                log.info("Loaded extension: %s", extension)
+            except Exception:
+                log.exception("Couldn't load extension %s (skipping it)", extension)
 
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
